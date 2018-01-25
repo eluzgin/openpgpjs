@@ -1,461 +1,572 @@
-// GPG4Browsers - An OpenPGP implementation in javascript
-// Copyright (C) 2011 Recurity Labs GmbH
-// 
+// OpenPGP.js - An OpenPGP implementation in javascript
+// Copyright (C) 2016 Tankred Hase
+//
 // This library is free software; you can redistribute it and/or
 // modify it under the terms of the GNU Lesser General Public
 // License as published by the Free Software Foundation; either
-// version 2.1 of the License, or (at your option) any later version.
-// 
+// version 3.0 of the License, or (at your option) any later version.
+//
 // This library is distributed in the hope that it will be useful,
 // but WITHOUT ANY WARRANTY; without even the implied warranty of
 // MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
 // Lesser General Public License for more details.
-// 
+//
 // You should have received a copy of the GNU Lesser General Public
 // License along with this library; if not, write to the Free Software
 // Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301  USA
 
 /**
- * @fileoverview The openpgp base class should provide all of the functionality 
- * to consume the openpgp.js library. All additional classes are documented 
- * for extending and developing on top of the base library.
+ * @requires message
+ * @requires cleartext
+ * @requires key
+ * @requires config
+ * @requires util
+ * @module openpgp
  */
 
 /**
- * GPG4Browsers Core interface. A single instance is hold
- * from the beginning. To use this library call "openpgp.init()"
- * @alias openpgp
- * @class
- * @classdesc Main Openpgp.js class. Use this to initiate and make all calls to this library.
+ * @fileoverview The openpgp base module should provide all of the functionality
+ * to consume the openpgp.js library. All additional classes are documented
+ * for extending and developing on top of the base library.
  */
-function _openpgp () {
-	this.tostring = "";
-	
-	/**
-	 * initializes the library:
-	 * - reading the keyring from local storage
-	 * - reading the config from local storage
-	 */
-	function init() {
-		this.config = new openpgp_config();
-		this.config.read();
-		this.keyring = new openpgp_keyring();
-		this.keyring.init();
-	}
-	
-	/**
-	 * reads several publicKey objects from a ascii armored
-	 * representation an returns openpgp_msg_publickey packets
-	 * @param {String} armoredText OpenPGP armored text containing
-	 * the public key(s)
-	 * @return {openpgp_msg_publickey[]} on error the function
-	 * returns null
-	 */
-	function read_publicKey(armoredText) {
-		var mypos = 0;
-		var publicKeys = new Array();
-		var publicKeyCount = 0;
-		var input = openpgp_encoding_deArmor(armoredText.replace(/\r/g,'')).openpgp;
-		var l = input.length;
-		while (mypos != input.length) {
-			var first_packet = openpgp_packet.read_packet(input, mypos, l);
-			// public key parser
-			if (input[mypos].charCodeAt() == 0x99 || first_packet.tagType == 6) {
-				publicKeys[publicKeyCount] = new openpgp_msg_publickey();				
-				publicKeys[publicKeyCount].header = input.substring(mypos,mypos+3);
-				if (input[mypos].charCodeAt() == 0x99) {
-					// parse the length and read a tag6 packet
-					mypos++;
-					var l = (input[mypos++].charCodeAt() << 8)
-							| input[mypos++].charCodeAt();
-					publicKeys[publicKeyCount].publicKeyPacket = new openpgp_packet_keymaterial();
-					publicKeys[publicKeyCount].publicKeyPacket.header = publicKeys[publicKeyCount].header;
-					publicKeys[publicKeyCount].publicKeyPacket.read_tag6(input, mypos, l);
-					mypos += publicKeys[publicKeyCount].publicKeyPacket.packetLength;
-					mypos += publicKeys[publicKeyCount].read_nodes(publicKeys[publicKeyCount].publicKeyPacket, input, mypos, (input.length - mypos));
-				} else {
-					publicKeys[publicKeyCount] = new openpgp_msg_publickey();
-					publicKeys[publicKeyCount].publicKeyPacket = first_packet;
-					mypos += first_packet.headerLength+first_packet.packetLength;
-					mypos += publicKeys[publicKeyCount].read_nodes(first_packet, input, mypos, input.length -mypos);
-				}
-			} else {
-				util.print_error("no public key found!");
-				return null;
-			}
-			publicKeys[publicKeyCount].data = input.substring(0,mypos);
-			publicKeyCount++;
-		}
-		return publicKeys;
-	}
-	
-	/**
-	 * reads several privateKey objects from a ascii armored
-	 * representation an returns openpgp_msg_privatekey objects
-	 * @param {String} armoredText OpenPGP armored text containing
-	 * the private key(s)
-	 * @return {openpgp_msg_privatekey[]} on error the function
-	 * returns null
-	 */
-	function read_privateKey(armoredText) {
-		var privateKeys = new Array();
-		var privateKeyCount = 0;
-		var mypos = 0;
-		var input = openpgp_encoding_deArmor(armoredText.replace(/\r/g,'')).openpgp;
-		var l = input.length;
-		while (mypos != input.length) {
-			var first_packet = openpgp_packet.read_packet(input, mypos, l);
-			if (first_packet.tagType == 5) {
-				privateKeys[privateKeys.length] = new openpgp_msg_privatekey();
-				mypos += first_packet.headerLength+first_packet.packetLength;
-				mypos += privateKeys[privateKeyCount].read_nodes(first_packet, input, mypos, l);
-			// other blocks	            
-			} else {
-				util.print_error('no block packet found!');
-				return null;
-			}
-			privateKeys[privateKeyCount].data = input.substring(0,mypos);
-			privateKeyCount++;
-		}
-		return privateKeys;		
-	}
 
-	/**
-	 * reads message packets out of an OpenPGP armored text and
-	 * returns an array of message objects
-	 * @param {String} armoredText text to be parsed
-	 * @return {openpgp_msg_message[]} on error the function
-	 * returns null
-	 */
-	function read_message(armoredText) {
-		var dearmored;
-		try{
-    		dearmored = openpgp_encoding_deArmor(armoredText.replace(/\r/g,''));
-		}
-		catch(e){
-    		util.print_error('no message found!');
-    		return null;
-		}
-		return read_messages_dearmored(dearmored);
-		}
-		
-	/**
-	 * reads message packets out of an OpenPGP armored text and
-	 * returns an array of message objects. Can be called externally or internally.
-	 * External call will parse a de-armored messaged and return messages found.
-	 * Internal will be called to read packets wrapped in other packets (i.e. compressed)
-	 * @param {String} input dearmored text of OpenPGP packets, to be parsed
-	 * @return {openpgp_msg_message[]} on error the function
-	 * returns null
-	 */
-	function read_messages_dearmored(input){
-		var messageString = input.openpgp;
-		var signatureText = input.text; //text to verify signatures against. Modified by Tag11.
-		var messages = new Array();
-		var messageCount = 0;
-		var mypos = 0;
-		var l = messageString.length;
-		while (mypos < messageString.length) {
-			var first_packet = openpgp_packet.read_packet(messageString, mypos, l);
-			if (!first_packet) {
-				break;
-			}
-			// public key parser (definition from the standard:)
-			// OpenPGP Message      :- Encrypted Message | Signed Message |
-			//                         Compressed Message | Literal Message.
-			// Compressed Message   :- Compressed Data Packet.
-			// 
-			// Literal Message      :- Literal Data Packet.
-			// 
-			// ESK                  :- Public-Key Encrypted Session Key Packet |
-			//                         Symmetric-Key Encrypted Session Key Packet.
-			// 
-			// ESK Sequence         :- ESK | ESK Sequence, ESK.
-			// 
-			// Encrypted Data       :- Symmetrically Encrypted Data Packet |
-			//                         Symmetrically Encrypted Integrity Protected Data Packet
-			// 
-			// Encrypted Message    :- Encrypted Data | ESK Sequence, Encrypted Data.
-			// 
-			// One-Pass Signed Message :- One-Pass Signature Packet,
-			//                         OpenPGP Message, Corresponding Signature Packet.
+'use strict';
 
-			// Signed Message       :- Signature Packet, OpenPGP Message |
-			//                         One-Pass Signed Message.
-			if (first_packet.tagType ==  1 ||
-			    (first_packet.tagType == 2 && first_packet.signatureType < 16) ||
-			     first_packet.tagType ==  3 ||
-			     first_packet.tagType ==  4 ||
-				 first_packet.tagType ==  8 ||
-				 first_packet.tagType ==  9 ||
-				 first_packet.tagType == 10 ||
-				 first_packet.tagType == 11 ||
-				 first_packet.tagType == 18 ||
-				 first_packet.tagType == 19) {
-				messages[messages.length] = new openpgp_msg_message();
-				messages[messageCount].messagePacket = first_packet;
-				messages[messageCount].type = input.type;
-				// Encrypted Message
-				if (first_packet.tagType == 9 ||
-				    first_packet.tagType == 1 ||
-				    first_packet.tagType == 3 ||
-				    first_packet.tagType == 18) {
-					if (first_packet.tagType == 9) {
-						util.print_error("unexpected openpgp packet");
-						break;
-					} else if (first_packet.tagType == 1) {
-						util.print_debug("session key found:\n "+first_packet.toString());
-						var issessionkey = true;
-						messages[messageCount].sessionKeys = new Array();
-						var sessionKeyCount = 0;
-						while (issessionkey) {
-							messages[messageCount].sessionKeys[sessionKeyCount] = first_packet;
-							mypos += first_packet.packetLength + first_packet.headerLength;
-							l -= (first_packet.packetLength + first_packet.headerLength);
-							first_packet = openpgp_packet.read_packet(messageString, mypos, l);
-							
-							if (first_packet.tagType != 1 && first_packet.tagType != 3)
-								issessionkey = false;
-							sessionKeyCount++;
-						}
-						if (first_packet.tagType == 18 || first_packet.tagType == 9) {
-							util.print_debug("encrypted data found:\n "+first_packet.toString());
-							messages[messageCount].encryptedData = first_packet;
-							mypos += first_packet.packetLength+first_packet.headerLength;
-							l -= (first_packet.packetLength+first_packet.headerLength);
-							messageCount++;
-							
-						} else {
-							util.print_debug("something is wrong: "+first_packet.tagType);
-						}
-						
-					} else if (first_packet.tagType == 18) {
-						util.print_debug("symmetric encrypted data");
-						break;
-					}
-				} else 
-					if (first_packet.tagType == 2 && first_packet.signatureType < 3) {
-					// Signed Message
-						mypos += first_packet.packetLength + first_packet.headerLength;
-						l -= (first_packet.packetLength + first_packet.headerLength);
-						messages[messageCount].text = signatureText;
-						messages[messageCount].signature = first_packet;
-				        messageCount++;
-				} else 
-					// Signed Message
-					if (first_packet.tagType == 4) {
-						//TODO: Implement check
-						mypos += first_packet.packetLength + first_packet.headerLength;
-						l -= (first_packet.packetLength + first_packet.headerLength);
-				} else 
-					if (first_packet.tagType == 8) {
-					// Compressed Message
-						mypos += first_packet.packetLength + first_packet.headerLength;
-						l -= (first_packet.packetLength + first_packet.headerLength);
-				        var decompressedText = first_packet.decompress();
-				        messages = messages.concat(openpgp.read_messages_dearmored({text: decompressedText, openpgp: decompressedText}));
-				} else
-					// Marker Packet (Obsolete Literal Packet) (Tag 10)
-					// "Such a packet MUST be ignored when received." see http://tools.ietf.org/html/rfc4880#section-5.8
-					if (first_packet.tagType == 10) {
-						// reset messages
-						messages.length = 0;
-						// continue with next packet
-						mypos += first_packet.packetLength + first_packet.headerLength;
-						l -= (first_packet.packetLength + first_packet.headerLength);
-				} else 
-					if (first_packet.tagType == 11) {
-					// Literal Message -- work is already done in read_packet
-					mypos += first_packet.packetLength + first_packet.headerLength;
-					l -= (first_packet.packetLength + first_packet.headerLength);
-					signatureText = first_packet.data;
-					messages[messageCount].data = first_packet.data;
-					messageCount++;
-				} else 
-					if (first_packet.tagType == 19) {
-					// Modification Detect Code
-						mypos += first_packet.packetLength + first_packet.headerLength;
-						l -= (first_packet.packetLength + first_packet.headerLength);
-				}
-			} else {
-				util.print_error('no message found!');
-				return null;
-			}
-		}
-		
-		return messages;
-	}
-	
-	/**
-	 * creates a binary string representation of an encrypted and signed message.
-	 * The message will be encrypted with the public keys specified and signed
-	 * with the specified private key.
-	 * @param {Object} privatekey {obj: [openpgp_msg_privatekey]} Private key 
-	 * to be used to sign the message
-	 * @param {Object[]} publickeys An arraf of {obj: [openpgp_msg_publickey]}
-	 * - public keys to be used to encrypt the message 
-	 * @param {String} messagetext message text to encrypt and sign
-	 * @return {String} a binary string representation of the message which 
-	 * can be OpenPGP armored
-	 */
-	function write_signed_and_encrypted_message(privatekey, publickeys, messagetext) {
-		var result = "";
-		var literal = new openpgp_packet_literaldata().write_packet(messagetext.replace(/\r\n/g,"\n").replace(/\n/g,"\r\n"));
-		util.print_debug_hexstr_dump("literal_packet: |"+literal+"|\n",literal);
-		for (var i = 0; i < publickeys.length; i++) {
-			var onepasssignature = new openpgp_packet_onepasssignature();
-			var onepasssigstr = "";
-			if (i == 0)
-				onepasssigstr = onepasssignature.write_packet(1, openpgp.config.config.prefer_hash_algorithm,  privatekey, false);
-			else
-				onepasssigstr = onepasssignature.write_packet(1, openpgp.config.config.prefer_hash_algorithm,  privatekey, false);
-			util.print_debug_hexstr_dump("onepasssigstr: |"+onepasssigstr+"|\n",onepasssigstr);
-			var datasignature = new openpgp_packet_signature().write_message_signature(1, messagetext.replace(/\r\n/g,"\n").replace(/\n/g,"\r\n"), privatekey);
-			util.print_debug_hexstr_dump("datasignature: |"+datasignature.openpgp+"|\n",datasignature.openpgp);
-			if (i == 0) {
-				result = onepasssigstr+literal+datasignature.openpgp;
-			} else {
-				result = onepasssigstr+result+datasignature.openpgp;
-			}
-		}
-		
-		util.print_debug_hexstr_dump("signed packet: |"+result+"|\n",result);
-		// signatures done.. now encryption
-		var sessionkey = openpgp_crypto_generateSessionKey(openpgp.config.config.encryption_cipher); 
-		var result2 = "";
-		
-		// creating session keys for each recipient
-		for (var i = 0; i < publickeys.length; i++) {
-			var pkey = publickeys[i].getEncryptionKey();
-			if (pkey == null) {
-				util.print_error("no encryption key found! Key is for signing only.");
-				return null;
-			}
-			result2 += new openpgp_packet_encryptedsessionkey().
-					write_pub_key_packet(
-						pkey.getKeyId(),
-						pkey.MPIs,
-						pkey.publicKeyAlgorithm,
-						openpgp.config.config.encryption_cipher,
-						sessionkey);
-		}
-		if (openpgp.config.config.integrity_protect) {
-			result2 += new openpgp_packet_encryptedintegrityprotecteddata().write_packet(openpgp.config.config.encryption_cipher, sessionkey, result);
-		} else {
-			result2 += new openpgp_packet_encrypteddata().write_packet(openpgp.config.config.encryption_cipher, sessionkey, result);
-		}
-		return openpgp_encoding_armor(3,result2,null,null);
-	}
-	/**
-	 * creates a binary string representation of an encrypted message.
-	 * The message will be encrypted with the public keys specified 
-	 * @param {Object[]} publickeys An array of {obj: [openpgp_msg_publickey]}
-	 * -public keys to be used to encrypt the message 
-	 * @param {String} messagetext message text to encrypt
-	 * @return {String} a binary string representation of the message
-	 * which can be OpenPGP armored
-	 */
-	function write_encrypted_message(publickeys, messagetext) {
-		var result = "";
-		var literal = new openpgp_packet_literaldata().write_packet(messagetext.replace(/\r\n/g,"\n").replace(/\n/g,"\r\n"));
-		util.print_debug_hexstr_dump("literal_packet: |"+literal+"|\n",literal);
-		result = literal;
-		
-		// signatures done.. now encryption
-		var sessionkey = openpgp_crypto_generateSessionKey(openpgp.config.config.encryption_cipher); 
-		var result2 = "";
-		
-		// creating session keys for each recipient
-		for (var i = 0; i < publickeys.length; i++) {
-			var pkey = publickeys[i].getEncryptionKey();
-			if (pkey == null) {
-				util.print_error("no encryption key found! Key is for signing only.");
-				return null;
-			}
-			result2 += new openpgp_packet_encryptedsessionkey().
-					write_pub_key_packet(
-						pkey.getKeyId(),
-						pkey.MPIs,
-						pkey.publicKeyAlgorithm,
-						openpgp.config.config.encryption_cipher,
-						sessionkey);
-		}
-		if (openpgp.config.config.integrity_protect) {
-			result2 += new openpgp_packet_encryptedintegrityprotecteddata().write_packet(openpgp.config.config.encryption_cipher, sessionkey, result);
-		} else {
-			result2 += new openpgp_packet_encrypteddata().write_packet(openpgp.config.config.encryption_cipher, sessionkey, result);
-		}
-		return openpgp_encoding_armor(3,result2,null,null);
-	}
-	
-	/**
-	 * creates a binary string representation a signed message.
-	 * The message will be signed with the specified private key.
-	 * @param {Object} privatekey {obj: [openpgp_msg_privatekey]}
-	 * - the private key to be used to sign the message 
-	 * @param {String} messagetext message text to sign
-	 * @return {Object} {Object: text [String]}, openpgp: {String} a binary
-	 *  string representation of the message which can be OpenPGP
-	 *   armored(openpgp) and a text representation of the message (text). 
-	 * This can be directly used to OpenPGP armor the message
-	 */
-	function write_signed_message(privatekey, messagetext) {
-		var sig = new openpgp_packet_signature().write_message_signature(1, messagetext.replace(/\r\n/g,"\n").replace(/\n/,"\r\n"), privatekey);
-		var result = {text: messagetext.replace(/\r\n/g,"\n").replace(/\n/,"\r\n"), openpgp: sig.openpgp, hash: sig.hash};
-		return openpgp_encoding_armor(2,result, null, null)
-	}
-	
-	/**
-	 * generates a new key pair for openpgp. Beta stage. Currently only 
-	 * supports RSA keys, and no subkeys.
-	 * @param {Integer} keyType to indicate what type of key to make. 
-	 * RSA is 1. Follows algorithms outlined in OpenPGP.
-	 * @param {Integer} numBits number of bits for the key creation. (should 
-	 * be 1024+, generally)
-	 * @param {String} userId assumes already in form of "User Name 
-	 * <username@email.com>"
-	 * @param {String} passphrase The passphrase used to encrypt the resulting private key
-	 * @return {Object} {privateKey: [openpgp_msg_privatekey], 
-	 * privateKeyArmored: [string], publicKeyArmored: [string]}
-	 */
-	function generate_key_pair(keyType, numBits, userId, passphrase){
-		var userIdPacket = new openpgp_packet_userid();
-		var userIdString = userIdPacket.write_packet(userId);
-		
-		var keyPair = openpgp_crypto_generateKeyPair(keyType,numBits, passphrase, openpgp.config.config.prefer_hash_algorithm, 3);
-		var privKeyString = keyPair.privateKey;
-		var privKeyPacket = new openpgp_packet_keymaterial().read_priv_key(privKeyString.string,3,privKeyString.string.length);
-		if(!privKeyPacket.decryptSecretMPIs(passphrase))
-		    util.print_error('Issue creating key. Unable to read resulting private key');
-		var privKey = new openpgp_msg_privatekey();
-		privKey.privateKeyPacket = privKeyPacket;
-		privKey.getPreferredSignatureHashAlgorithm = function(){return openpgp.config.config.prefer_hash_algorithm};//need to override this to solve catch 22 to generate signature. 8 is value for SHA256
-		
-		var publicKeyString = privKey.privateKeyPacket.publicKey.data;
-		var hashData = String.fromCharCode(0x99)+ String.fromCharCode(((publicKeyString.length) >> 8) & 0xFF) 
-			+ String.fromCharCode((publicKeyString.length) & 0xFF) +publicKeyString+String.fromCharCode(0xB4) +
-			String.fromCharCode((userId.length) >> 24) +String.fromCharCode(((userId.length) >> 16) & 0xFF) 
-			+ String.fromCharCode(((userId.length) >> 8) & 0xFF) + String.fromCharCode((userId.length) & 0xFF) + userId
-		var signature = new openpgp_packet_signature();
-		signature = signature.write_message_signature(16,hashData, privKey);
-		var publicArmored = openpgp_encoding_armor(4, keyPair.publicKey.string + userIdString + signature.openpgp );
+import * as messageLib from './message.js';
+import * as cleartext from './cleartext.js';
+import * as key from './key.js';
+import config from './config/config.js';
+import util from './util';
+import AsyncProxy from './worker/async_proxy.js';
+import es6Promise from 'es6-promise';
+es6Promise.polyfill(); // load ES6 Promises polyfill
 
-		var privArmored = openpgp_encoding_armor(5,privKeyString.string+userIdString+signature.openpgp);
-		
-		return {privateKey : privKey, privateKeyArmored: privArmored, publicKeyArmored: publicArmored}
-	}
-	
-	this.generate_key_pair = generate_key_pair;
-	this.write_signed_message = write_signed_message; 
-	this.write_signed_and_encrypted_message = write_signed_and_encrypted_message;
-	this.write_encrypted_message = write_encrypted_message;
-	this.read_message = read_message;
-	this.read_messages_dearmored = read_messages_dearmored;
-	this.read_publicKey = read_publicKey;
-	this.read_privateKey = read_privateKey;
-	this.init = init;
+
+//////////////////////////
+//                      //
+//   Web Worker setup   //
+//                      //
+//////////////////////////
+
+
+let asyncProxy; // instance of the asyncproxy
+
+/**
+ * Set the path for the web worker script and create an instance of the async proxy
+ * @param {String} path     relative path to the worker scripts, default: 'openpgp.worker.js'
+ * @param {Object} worker   alternative to path parameter: web worker initialized with 'openpgp.worker.js'
+ */
+export function initWorker({ path='openpgp.worker.js', worker } = {}) {
+  if (worker || typeof window !== 'undefined' && window.Worker) {
+    asyncProxy = new AsyncProxy({ path, worker, config });
+    return true;
+  }
 }
 
-var openpgp = new _openpgp();
+/**
+ * Returns a reference to the async proxy if the worker was initialized with openpgp.initWorker()
+ * @return {module:worker/async_proxy~AsyncProxy|null} the async proxy or null if not initialized
+ */
+export function getWorker() {
+  return asyncProxy;
+}
+
+/**
+ * Cleanup the current instance of the web worker.
+ */
+export function destroyWorker() {
+  asyncProxy = undefined;
+}
 
 
+//////////////////////
+//                  //
+//   Key handling   //
+//                  //
+//////////////////////
+
+
+/**
+ * Generates a new OpenPGP key pair. Currently only supports RSA keys. Primary and subkey will be of same type.
+ * @param  {Array<Object>} userIds   array of user IDs e.g. [{ name:'Phil Zimmermann', email:'phil@openpgp.org' }]
+ * @param  {String} passphrase       (optional) The passphrase used to encrypt the resulting private key
+ * @param  {Number} numBits          (optional) number of bits for the key creation. (should be 2048 or 4096)
+ * @param  {Boolean} unlocked        (optional) If the returned secret part of the generated key is unlocked
+ * @param  {Number} keyExpirationTime (optional) The number of seconds after the key creation time that the key expires
+ * @return {Promise<Object>}         The generated key object in the form:
+ *                                     { key:Key, privateKeyArmored:String, publicKeyArmored:String }
+ * @static
+ */
+export function generateKey({ userIds=[], passphrase, numBits=2048, unlocked=false, keyExpirationTime=0 } = {}) {
+  const options = formatUserIds({ userIds, passphrase, numBits, unlocked, keyExpirationTime });
+
+  if (!util.getWebCryptoAll() && asyncProxy) { // use web worker if web crypto apis are not supported
+    return asyncProxy.delegate('generateKey', options);
+  }
+
+  return key.generate(options).then(newKey => ({
+
+    key: newKey,
+    privateKeyArmored: newKey.armor(),
+    publicKeyArmored: newKey.toPublic().armor()
+
+  })).catch(onError.bind(null, 'Error generating keypair'));
+}
+
+/**
+ * Reformats signature packets for a key and rewraps key object.
+ * @param  {Array<Object>} userIds   array of user IDs e.g. [{ name:'Phil Zimmermann', email:'phil@openpgp.org' }]
+ * @param  {String} passphrase       (optional) The passphrase used to encrypt the resulting private key
+ * @param  {Boolean} unlocked        (optional) If the returned secret part of the generated key is unlocked
+ * @param  {Number} keyExpirationTime (optional) The number of seconds after the key creation time that the key expires
+ * @return {Promise<Object>}         The generated key object in the form:
+ *                                     { key:Key, privateKeyArmored:String, publicKeyArmored:String }
+ * @static
+ */
+export function reformatKey({ privateKey, userIds=[], passphrase="", unlocked=false, keyExpirationTime=0 } = {}) {
+  const options = formatUserIds({ privateKey, userIds, passphrase, unlocked, keyExpirationTime });
+
+  if (asyncProxy) {
+    return asyncProxy.delegate('reformatKey', options);
+  }
+
+  return key.reformat(options).then(newKey => ({
+
+    key: newKey,
+    privateKeyArmored: newKey.armor(),
+    publicKeyArmored: newKey.toPublic().armor()
+
+  })).catch(onError.bind(null, 'Error reformatting keypair'));
+}
+
+/**
+ * Unlock a private key with your passphrase.
+ * @param  {Key} privateKey      the private key that is to be decrypted
+ * @param  {String} passphrase   the user's passphrase chosen during key generation
+ * @return {Key}                 the unlocked private key
+ */
+export function decryptKey({ privateKey, passphrase }) {
+  if (asyncProxy) { // use web worker if available
+    return asyncProxy.delegate('decryptKey', { privateKey, passphrase });
+  }
+
+  return execute(() => {
+
+    if (!privateKey.decrypt(passphrase)) {
+      throw new Error('Invalid passphrase');
+    }
+    return {
+      key: privateKey
+    };
+
+  }, 'Error decrypting private key');
+}
+
+
+///////////////////////////////////////////
+//                                       //
+//   Message encryption and decryption   //
+//                                       //
+///////////////////////////////////////////
+
+
+/**
+ * Encrypts message text/data with public keys, passwords or both at once. At least either public keys or passwords
+ *   must be specified. If private keys are specified, those will be used to sign the message.
+ * @param  {String|Uint8Array} data           text/data to be encrypted as JavaScript binary string or Uint8Array
+ * @param  {Key|Array<Key>} publicKeys        (optional) array of keys or single key, used to encrypt the message
+ * @param  {Key|Array<Key>} privateKeys       (optional) private keys for signing. If omitted message will not be signed
+ * @param  {String|Array<String>} passwords   (optional) array of passwords or a single password to encrypt the message
+ * @param  {Object} sessionKey                (optional) session key in the form: { data:Uint8Array, algorithm:String }
+ * @param  {String} filename                  (optional) a filename for the literal data packet
+ * @param  {Boolean} armor                    (optional) if the return values should be ascii armored or the message/signature objects
+ * @param  {Boolean} detached                 (optional) if the signature should be detached (if true, signature will be added to returned object)
+ * @param  {Signature} signature              (optional) a detached signature to add to the encrypted message
+ * @param  {Boolean} returnSessionKey         (optional) if the unencrypted session key should be added to returned object
+ * @return {Promise<Object>}                  encrypted (and optionally signed message) in the form:
+ *                                              {data: ASCII armored message if 'armor' is true,
+ *                                                message: full Message object if 'armor' is false, signature: detached signature if 'detached' is true}
+ * @static
+ */
+export function encrypt({ data, publicKeys, privateKeys, passwords, sessionKey, filename, armor=true, detached=false, signature=null, returnSessionKey=false}) {
+  checkData(data); publicKeys = toArray(publicKeys); privateKeys = toArray(privateKeys); passwords = toArray(passwords);
+
+  if (!nativeAEAD() && asyncProxy) { // use web worker if web crypto apis are not supported
+    return asyncProxy.delegate('encrypt', { data, publicKeys, privateKeys, passwords, sessionKey, filename, armor, detached, signature, returnSessionKey });
+  }
+  var result = {};
+  return Promise.resolve().then(() => {
+
+    let message = createMessage(data, filename);
+    if (!privateKeys) {
+      privateKeys = [];
+    }
+    if (privateKeys.length || signature) { // sign the message only if private keys or signature is specified
+      if (detached) {
+        var detachedSignature = message.signDetached(privateKeys, signature);
+        if (armor) {
+          result.signature = detachedSignature.armor();
+        } else {
+          result.signature = detachedSignature;
+        }
+      } else {
+        message = message.sign(privateKeys, signature);
+      }
+    }
+    return message.encrypt(publicKeys, passwords, sessionKey);
+
+  }).then(encrypted => {
+    if (armor) {
+      result.data = encrypted.message.armor();
+    } else {
+      result.message = encrypted.message;
+    }
+    if (returnSessionKey) {
+      result.sessionKey = encrypted.sessionKey;
+    }
+    return result;
+  }).catch(onError.bind(null, 'Error encrypting message'));
+}
+
+/**
+ * Decrypts a message with the user's private key, a session key or a password. Either a private key,
+ *   a session key or a password must be specified.
+ * @param  {Message} message             the message object with the encrypted data
+ * @param  {Key} privateKey              (optional) private key with decrypted secret key data or session key
+ * @param  {Key|Array<Key>} publicKeys   (optional) array of public keys or single key, to verify signatures
+ * @param  {Object} sessionKey           (optional) session key in the form: { data:Uint8Array, algorithm:String }
+ * @param  {String} password             (optional) single password to decrypt the message
+ * @param  {String} format               (optional) return data format either as 'utf8' or 'binary'
+ * @param  {Signature} signature         (optional) detached signature for verification
+ * @return {Promise<Object>}             decrypted and verified message in the form:
+ *                                         { data:Uint8Array|String, filename:String, signatures:[{ keyid:String, valid:Boolean }] }
+ * @static
+ */
+export function decrypt({ message, privateKey, publicKeys, sessionKey, password, format='utf8', signature=null }) {
+  checkMessage(message); publicKeys = toArray(publicKeys);
+
+  if (!nativeAEAD() && asyncProxy) { // use web worker if web crypto apis are not supported
+    return asyncProxy.delegate('decrypt', { message, privateKey, publicKeys, sessionKey, password, format, signature });
+  }
+
+  return message.decrypt(privateKey, sessionKey, password).then(message => {
+
+    const result = parseMessage(message, format);
+
+    if (!publicKeys) {
+      publicKeys = [];
+    }
+    if (signature) {
+      //detached signature
+      result.signatures = message.verifyDetached(signature, publicKeys);
+    } else {
+      result.signatures = message.verify(publicKeys);
+    }
+
+    return result;
+
+  }).catch(onError.bind(null, 'Error decrypting message'));
+}
+
+
+//////////////////////////////////////////
+//                                      //
+//   Message signing and verification   //
+//                                      //
+//////////////////////////////////////////
+
+
+/**
+ * Signs a cleartext message.
+ * @param  {String | Uint8Array} data           cleartext input to be signed
+ * @param  {Key|Array<Key>} privateKeys         array of keys or single key with decrypted secret key data to sign cleartext
+ * @param  {Boolean} armor                      (optional) if the return value should be ascii armored or the message object
+ * @param  {Boolean} detached                   (optional) if the return value should contain a detached signature
+ * @return {Promise<Object>}                    signed cleartext in the form:
+ *                                                {data: ASCII armored message if 'armor' is true,
+ *                                                message: full Message object if 'armor' is false, signature: detached signature if 'detached' is true}
+ * @static
+ */
+export function sign({ data, privateKeys, armor=true, detached=false}) {
+  checkData(data);
+  privateKeys = toArray(privateKeys);
+
+  if (asyncProxy) { // use web worker if available
+    return asyncProxy.delegate('sign', { data, privateKeys, armor, detached });
+  }
+
+  var result = {};
+  return execute(() => {
+    var message;
+
+    if (util.isString(data)) {
+      message = new cleartext.CleartextMessage(data);
+    } else {
+      message = messageLib.fromBinary(data);
+    }
+
+    if (detached) {
+      var signature = message.signDetached(privateKeys);
+      if (armor) {
+        result.signature = signature.armor();
+      } else {
+        result.signature = signature;
+      }
+    } else {
+      message = message.sign(privateKeys);
+      if (armor) {
+        result.data = message.armor();
+      } else {
+        result.message = message;
+      }
+    }
+
+    return result;
+
+  }, 'Error signing cleartext message');
+}
+
+/**
+ * Verifies signatures of cleartext signed message
+ * @param  {Key|Array<Key>} publicKeys   array of publicKeys or single key, to verify signatures
+ * @param  {CleartextMessage} message    cleartext message object with signatures
+ * @param  {Signature} signature         (optional) detached signature for verification
+ * @return {Promise<Object>}             cleartext with status of verified signatures in the form of:
+ *                                         { data:String, signatures: [{ keyid:String, valid:Boolean }] }
+ * @static
+ */
+export function verify({ message, publicKeys, signature=null }) {
+  checkCleartextOrMessage(message);
+  publicKeys = toArray(publicKeys);
+
+  if (asyncProxy) { // use web worker if available
+    return asyncProxy.delegate('verify', { message, publicKeys, signature });
+  }
+
+  var result = {};
+  return execute(() => {
+    if (cleartext.CleartextMessage.prototype.isPrototypeOf(message)) {
+      result.data = message.getText();
+    } else {
+      result.data = message.getLiteralData();
+    }
+    if (signature) {
+      //detached signature
+      result.signatures = message.verifyDetached(signature, publicKeys);
+    } else {
+      result.signatures = message.verify(publicKeys);
+    }
+    return result;
+
+  }, 'Error verifying cleartext signed message');
+}
+
+
+///////////////////////////////////////////////
+//                                           //
+//   Session key encryption and decryption   //
+//                                           //
+///////////////////////////////////////////////
+
+
+/**
+ * Encrypt a symmetric session key with public keys, passwords, or both at once. At least either public keys
+ *   or passwords must be specified.
+ * @param  {Uint8Array} data                  the session key to be encrypted e.g. 16 random bytes (for aes128)
+ * @param  {String} algorithm                 algorithm of the symmetric session key e.g. 'aes128' or 'aes256'
+ * @param  {Key|Array<Key>} publicKeys        (optional) array of public keys or single key, used to encrypt the key
+ * @param  {String|Array<String>} passwords   (optional) passwords for the message
+ * @return {Promise<Message>}                 the encrypted session key packets contained in a message object
+ * @static
+ */
+export function encryptSessionKey({ data, algorithm, publicKeys, passwords }) {
+  checkBinary(data); checkString(algorithm, 'algorithm'); publicKeys = toArray(publicKeys); passwords = toArray(passwords);
+
+  if (asyncProxy) { // use web worker if available
+    return asyncProxy.delegate('encryptSessionKey', { data, algorithm, publicKeys, passwords });
+  }
+
+  return execute(() => ({
+
+    message: messageLib.encryptSessionKey(data, algorithm, publicKeys, passwords)
+
+  }), 'Error encrypting session key');
+}
+
+/**
+ * Decrypt a symmetric session key with a private key or password. Either a private key or
+ *   a password must be specified.
+ * @param  {Message} message              a message object containing the encrypted session key packets
+ * @param  {Key} privateKey               (optional) private key with decrypted secret key data
+ * @param  {String} password              (optional) a single password to decrypt the session key
+ * @return {Promise<Object|undefined>}    decrypted session key and algorithm in object form:
+ *                                          { data:Uint8Array, algorithm:String }
+ *                                          or 'undefined' if no key packets found
+ * @static
+ */
+export function decryptSessionKey({ message, privateKey, password }) {
+  checkMessage(message);
+
+  if (asyncProxy) { // use web worker if available
+    return asyncProxy.delegate('decryptSessionKey', { message, privateKey, password });
+  }
+
+  return execute(() => message.decryptSessionKey(privateKey, password), 'Error decrypting session key');
+}
+
+
+//////////////////////////
+//                      //
+//   Helper functions   //
+//                      //
+//////////////////////////
+
+
+/**
+ * Input validation
+ */
+function checkString(data, name) {
+  if (!util.isString(data)) {
+    throw new Error('Parameter [' + (name || 'data') + '] must be of type String');
+  }
+}
+function checkBinary(data, name) {
+  if (!util.isUint8Array(data)) {
+    throw new Error('Parameter [' + (name || 'data') + '] must be of type Uint8Array');
+  }
+}
+function checkData(data, name) {
+  if (!util.isUint8Array(data) && !util.isString(data)) {
+    throw new Error('Parameter [' + (name || 'data') + '] must be of type String or Uint8Array');
+  }
+}
+function checkMessage(message) {
+  if (!messageLib.Message.prototype.isPrototypeOf(message)) {
+    throw new Error('Parameter [message] needs to be of type Message');
+  }
+}
+function checkCleartextOrMessage(message) {
+  if (!cleartext.CleartextMessage.prototype.isPrototypeOf(message) && !messageLib.Message.prototype.isPrototypeOf(message)) {
+    throw new Error('Parameter [message] needs to be of type Message or CleartextMessage');
+  }
+}
+
+/**
+ * Format user ids for internal use.
+ */
+function formatUserIds(options) {
+  if (!options.userIds) {
+    return options;
+  }
+  options.userIds = toArray(options.userIds); // normalize to array
+  options.userIds = options.userIds.map(id => {
+    if (util.isString(id) && !util.isUserId(id)) {
+      throw new Error('Invalid user id format');
+    }
+    if (util.isUserId(id)) {
+      return id; // user id is already in correct format... no conversion necessary
+    }
+    // name and email address can be empty but must be of the correct type
+    id.name = id.name || '';
+    id.email = id.email || '';
+    if (!util.isString(id.name) || (id.email && !util.isEmailAddress(id.email))) {
+      throw new Error('Invalid user id format');
+    }
+    id.name = id.name.trim();
+    if (id.name.length > 0) {
+      id.name += ' ';
+    }
+    return id.name + '<' + id.email + '>';
+  });
+  return options;
+}
+
+/**
+ * Normalize parameter to an array if it is not undefined.
+ * @param  {Object} param              the parameter to be normalized
+ * @return {Array<Object>|undefined}   the resulting array or undefined
+ */
+function toArray(param) {
+  if (param && !util.isArray(param)) {
+    param = [param];
+  }
+  return param;
+}
+
+/**
+ * Creates a message obejct either from a Uint8Array or a string.
+ * @param  {String|Uint8Array} data   the payload for the message
+ * @param  {String} filename          the literal data packet's filename
+ * @return {Message}                  a message object
+ */
+function createMessage(data, filename) {
+  let msg;
+  if (util.isUint8Array(data)) {
+    msg = messageLib.fromBinary(data, filename);
+  } else if (util.isString(data)) {
+    msg = messageLib.fromText(data, filename);
+  } else {
+    throw new Error('Data must be of type String or Uint8Array');
+  }
+  return msg;
+}
+
+/**
+ * Parse the message given a certain format.
+ * @param  {Message} message   the message object to be parse
+ * @param  {String} format     the output format e.g. 'utf8' or 'binary'
+ * @return {Object}            the parse data in the respective format
+ */
+function parseMessage(message, format) {
+  if (format === 'binary') {
+    return {
+      data: message.getLiteralData(),
+      filename: message.getFilename()
+    };
+  } else if (format === 'utf8') {
+    return {
+      data: message.getText(),
+      filename: message.getFilename()
+    };
+  } else {
+    throw new Error('Invalid format');
+  }
+}
+
+/**
+ * Command pattern that wraps synchronous code into a promise.
+ * @param  {function} cmd     The synchronous function with a return value
+ *                              to be wrapped in a promise
+ * @param  {String} message   A human readable error Message
+ * @return {Promise}          The promise wrapped around cmd
+ */
+function execute(cmd, message) {
+  // wrap the sync cmd in a promise
+  const promise = new Promise(resolve => resolve(cmd()));
+  // handler error globally
+  return promise.catch(onError.bind(null, message));
+}
+
+/**
+ * Global error handler that logs the stack trace and rethrows a high lvl error message.
+ * @param {String} message   A human readable high level error Message
+ * @param {Error} error      The internal error that caused the failure
+ */
+function onError(message, error) {
+  // log the stack trace
+  if (config.debug) { console.error(error.stack); }
+
+  // update error message
+  error.message = message + ': ' + error.message;
+
+  throw error;
+}
+
+/**
+ * Check for AES-GCM support and configuration by the user. Only browsers that
+ * implement the current WebCrypto specification support native AES-GCM.
+ * @return {Boolean}   If authenticated encryption should be used
+ */
+function nativeAEAD() {
+  return util.getWebCrypto() && config.aead_protect;
+}
